@@ -153,6 +153,7 @@ class Trainer(object):
                 supervision_model.load_state_dict(
                     copyStateDict(supervision_param["craft"])
                 )
+                print(f"Loaded ckpt from {self.config.train.ckpt_path}")
                 supervision_model = supervision_model.to(f"cuda:{supervision_device}")
             print(f"Supervision model loading on : gpu {supervision_device}")
         else:
@@ -236,15 +237,18 @@ class Trainer(object):
             "================================ Train start ================================"
         )
         while train_step < whole_training_step:
-            for (
-                    index,
-                    (
-                            images,
-                            region_scores,
-                            affinity_scores,
-                            confidence_masks,
-                    ),
-            ) in enumerate(trn_real_loader):
+            # for (
+            #         index,
+            #         (
+            #                 images,
+            #                 region_scores,
+            #                 affinity_scores,
+            #                 confidence_masks,
+            #         ),
+            # ) in enumerate(trn_real_loader):
+            loop = tqdm(enumerate(trn_real_loader), total=len(trn_real_loader), desc=f"Step {train_step}/{whole_training_step}")
+            for index, (images, region_scores, affinity_scores, confidence_masks) in loop:
+
                 craft.train()
                 if train_step > 0 and train_step % self.config.train.lr_decay == 0:
                     update_lr_rate_step += 1
@@ -388,6 +392,12 @@ class Trainer(object):
                         buffer_dict["custom_data"],
                         craft,
                     )
+
+                loop.set_postfix({
+                    "Loss": f"{loss.item():.4f}",
+                    "LR": f"{training_lr:.6f}",
+                    "Step": train_step
+                })
 
                 train_step += 1
                 if train_step >= whole_training_step:
