@@ -11,6 +11,8 @@ import torch.utils.data
 from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 from tqdm import tqdm
+import csv
+import json
 
 from utils import CTCLabelConverter, AttnLabelConverter, Averager
 from dataset import hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
@@ -29,6 +31,49 @@ def count_parameters(model):
         print(name, param)
     print(f"Total Trainable Params: {total_params}")
     return total_params
+
+def initialize_metrics_logging(experiment_name):
+    """Initialize CSV files for metrics logging"""
+    metrics_dir = f'./saved_models/{experiment_name}/metrics'
+    os.makedirs(metrics_dir, exist_ok=True)
+    
+    # Training metrics CSV
+    train_csv_path = os.path.join(metrics_dir, 'training_metrics.csv')
+    train_fieldnames = ['iteration', 'train_loss', 'learning_rate', 'batch_time', 'data_time']
+    
+    # Validation metrics CSV
+    val_csv_path = os.path.join(metrics_dir, 'validation_metrics.csv')
+    val_fieldnames = ['iteration', 'valid_loss', 'accuracy', 'norm_ed', 'inference_time', 
+                      'elapsed_time', 'best_accuracy', 'best_norm_ed']
+    
+    # Initialize CSV files with headers
+    with open(train_csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=train_fieldnames)
+        writer.writeheader()
+    
+    with open(val_csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=val_fieldnames)
+        writer.writeheader()
+    
+    return train_csv_path, val_csv_path, train_fieldnames, val_fieldnames
+
+def log_training_metrics(csv_path, fieldnames, metrics):
+    """Log training metrics to CSV"""
+    with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow(metrics)
+
+def log_validation_metrics(csv_path, fieldnames, metrics):
+    """Log validation metrics to CSV"""
+    with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow(metrics)
+
+def save_metrics_summary(experiment_name, metrics_summary):
+    """Save overall training summary as JSON"""
+    summary_path = f'./saved_models/{experiment_name}/metrics/training_summary.json'
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        json.dump(metrics_summary, f, indent=2)
 
 def train(opt, show_number = 2, amp=False):
     """ dataset preparation """
@@ -52,6 +97,9 @@ def train(opt, show_number = 2, amp=False):
     print('-' * 80)
     log.write('-' * 80 + '\n')
     log.close()
+    
+    # Initialize metrics logging
+    train_csv_path, val_csv_path, train_fieldnames, val_fieldnames = initialize_metrics_logging(opt.experiment_name)
     
     """ model configuration """
     if 'CTC' in opt.Prediction:
@@ -172,15 +220,27 @@ def train(opt, show_number = 2, amp=False):
 
     scaler = GradScaler()
     t1= time.time()
+    
+    # Metrics tracking
+    training_losses = []
+    validation_accuracies = []
+    validation_losses = []
+    learning_rates = []
 
     with tqdm(total=opt.num_iter, initial=start_iter, desc="Training Progress") as pbar:
         while(True):
+            # Data loading time tracking
+            data_start_time = time.time()
+            
             # train part
             optimizer.zero_grad(set_to_none=True)
             
             if amp:
                 with autocast():
                     image_tensors, labels = train_dataset.get_batch()
+                    data_time = time.time() - data_start_time
+                    
+                    batch_start_time = time.time()
                     image = image_tensors.to(device)
                     text, length = converter.encode(labels, batch_max_length=opt.batch_max_length)
                     batch_size = image.size(0)
@@ -203,6 +263,9 @@ def train(opt, show_number = 2, amp=False):
                 scaler.update()
             else:
                 image_tensors, labels = train_dataset.get_batch()
+                data_time = time.time() - data_start_time
+                
+                batch_start_time = time.time()
                 image = image_tensors.to(device)
                 text, length = converter.encode(labels, batch_max_length=opt.batch_max_length)
                 batch_size = image.size(0)
@@ -220,10 +283,28 @@ def train(opt, show_number = 2, amp=False):
                 cost.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip) 
                 optimizer.step()
-                
+            
+            batch_time = time.time() - batch_start_time
+            
             loss_avg.add(cost)
+            training_losses.append(cost.item())
+            
+            # Get current learning rate
+            current_lr = optimizer.param_groups[0]['lr'] if hasattr(optimizer, 'param_groups') else opt.lr
+            learning_rates.append(current_lr)
+            
+            # Log training metrics every iteration
+            train_metrics = {
+                'iteration': i,
+                'train_loss': cost.item(),
+                'learning_rate': current_lr,
+                'batch_time': batch_time,
+                'data_time': data_time
+            }
+            log_training_metrics(train_csv_path, train_fieldnames, train_metrics)
+            
             pbar.update(1)
-            pbar.set_description(f"Training Progress (loss: {cost.item():.4f})")
+            pbar.set_description(f"Training Progress (loss: {cost.item():.4f}, lr: {current_lr:.6f})")
             
             # validation part
             if (i % opt.valInterval == 0) and (i!=0):
@@ -237,6 +318,10 @@ def train(opt, show_number = 2, amp=False):
                         valid_loss, current_accuracy, current_norm_ED, preds, confidence_score, labels,\
                         infer_time, length_of_data = validation(model, criterion, valid_loader, converter, opt, device)
                     model.train()
+                    
+                    # Store validation metrics
+                    validation_losses.append(valid_loss)
+                    validation_accuracies.append(current_accuracy)
     
                     # training loss and validation loss
                     loss_log = f'[{i}/{opt.num_iter}] Train loss: {loss_avg.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
@@ -256,6 +341,19 @@ def train(opt, show_number = 2, amp=False):
                     loss_model_log = f'{loss_log}\n{current_model_log}\n{best_model_log}'
                     print(loss_model_log)
                     log.write(loss_model_log + '\n')
+                    
+                    # Log validation metrics
+                    val_metrics = {
+                        'iteration': i,
+                        'valid_loss': valid_loss,
+                        'accuracy': current_accuracy,
+                        'norm_ed': current_norm_ED,
+                        'inference_time': infer_time,
+                        'elapsed_time': elapsed_time,
+                        'best_accuracy': best_accuracy,
+                        'best_norm_ed': best_norm_ED
+                    }
+                    log_validation_metrics(val_csv_path, val_fieldnames, val_metrics)
     
                     # show some predicted results
                     dashed_line = '-' * 80
@@ -276,12 +374,49 @@ def train(opt, show_number = 2, amp=False):
                     log.write(predicted_result_log + '\n')
                     print('validation time: ', time.time()-t1)
                     t1=time.time()
+                    
             # save model per 1e+4 iter.
             if (i + 1) % 1e+4 == 0:
                 torch.save(
                     model.state_dict(), f'./saved_models/{opt.experiment_name}/iter_{i+1}.pth')
+                
+                # Save intermediate metrics summary
+                metrics_summary = {
+                    'iteration': i + 1,
+                    'total_iterations': opt.num_iter,
+                    'best_accuracy': best_accuracy,
+                    'best_norm_ed': best_norm_ED,
+                    'current_train_loss': training_losses[-1] if training_losses else 0,
+                    'current_val_loss': validation_losses[-1] if validation_losses else 0,
+                    'current_val_accuracy': validation_accuracies[-1] if validation_accuracies else 0,
+                    'training_time_elapsed': time.time() - start_time,
+                    'avg_train_loss_last_1000': np.mean(training_losses[-1000:]) if len(training_losses) >= 1000 else np.mean(training_losses),
+                    'experiment_name': opt.experiment_name
+                }
+                save_metrics_summary(opt.experiment_name, metrics_summary)
     
             if i == opt.num_iter:
                 print('end the training')
+                
+                # Save final metrics summary
+                final_summary = {
+                    'total_iterations': opt.num_iter,
+                    'final_best_accuracy': best_accuracy,
+                    'final_best_norm_ed': best_norm_ED,
+                    'total_training_time': time.time() - start_time,
+                    'avg_train_loss': np.mean(training_losses),
+                    'final_train_loss': training_losses[-1] if training_losses else 0,
+                    'final_val_loss': validation_losses[-1] if validation_losses else 0,
+                    'final_val_accuracy': validation_accuracies[-1] if validation_accuracies else 0,
+                    'experiment_name': opt.experiment_name,
+                    'model_parameters': sum(params_num),
+                    'total_training_samples': len(training_losses)
+                }
+                save_metrics_summary(opt.experiment_name, final_summary)
+                
+                print(f"Training completed! Metrics saved in: ./saved_models/{opt.experiment_name}/metrics/")
+                print(f"Final accuracy: {best_accuracy:.3f}")
+                print(f"Final norm ED: {best_norm_ED:.4f}")
+                
                 sys.exit()
             i += 1
