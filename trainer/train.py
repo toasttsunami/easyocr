@@ -72,6 +72,12 @@ def log_validation_metrics(csv_path, fieldnames, metrics):
 def save_metrics_summary(experiment_name, metrics_summary):
     """Save overall training summary as JSON"""
     summary_path = f'./saved_models/{experiment_name}/metrics/training_summary.json'
+    # Just before json.dump(metrics_summary, f, indent=2)
+    for k, v in metrics_summary.items():
+        if isinstance(v, torch.Tensor):
+            metrics_summary[k] = v.item()
+        elif isinstance(v, np.generic):  # for NumPy floats/ints
+            metrics_summary[k] = v.item()
     with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump(metrics_summary, f, indent=2)
 
@@ -382,16 +388,16 @@ def train(opt, show_number = 2, amp=False):
                 
                 # Save intermediate metrics summary
                 metrics_summary = {
-                    'iteration': i + 1,
-                    'total_iterations': opt.num_iter,
-                    'best_accuracy': best_accuracy,
-                    'best_norm_ed': best_norm_ED,
-                    'current_train_loss': training_losses[-1] if training_losses else 0,
-                    'current_val_loss': validation_losses[-1] if validation_losses else 0,
-                    'current_val_accuracy': validation_accuracies[-1] if validation_accuracies else 0,
-                    'training_time_elapsed': time.time() - start_time,
-                    'avg_train_loss_last_1000': np.mean(training_losses[-1000:]) if len(training_losses) >= 1000 else np.mean(training_losses),
-                    'experiment_name': opt.experiment_name
+                    'iteration': int(i + 1),
+                    'total_iterations': int(opt.num_iter),
+                    'best_accuracy': float(best_accuracy),
+                    'best_norm_ed': float(best_norm_ED),
+                    'current_train_loss': float(training_losses[-1]) if training_losses else 0.0,
+                    'current_val_loss': float(validation_losses[-1]) if validation_losses else 0.0,
+                    'current_val_accuracy': float(validation_accuracies[-1]) if validation_accuracies else 0.0,
+                    'training_time_elapsed': float(time.time() - start_time),
+                    'avg_train_loss_last_1000': float(np.mean(training_losses[-1000:])) if len(training_losses) >= 1000 else float(np.mean(training_losses)) if training_losses else 0.0,
+                    'experiment_name': str(opt.experiment_name)
                 }
                 save_metrics_summary(opt.experiment_name, metrics_summary)
     
@@ -400,18 +406,19 @@ def train(opt, show_number = 2, amp=False):
                 
                 # Save final metrics summary
                 final_summary = {
-                    'total_iterations': opt.num_iter,
-                    'final_best_accuracy': best_accuracy,
-                    'final_best_norm_ed': best_norm_ED,
-                    'total_training_time': time.time() - start_time,
-                    'avg_train_loss': np.mean(training_losses),
-                    'final_train_loss': training_losses[-1] if training_losses else 0,
-                    'final_val_loss': validation_losses[-1] if validation_losses else 0,
-                    'final_val_accuracy': validation_accuracies[-1] if validation_accuracies else 0,
-                    'experiment_name': opt.experiment_name,
-                    'model_parameters': sum(params_num),
-                    'total_training_samples': len(training_losses)
-                }
+                    'total_iterations': int(opt.num_iter),
+                    'final_best_accuracy': float(best_accuracy),
+                    'final_best_norm_ed': float(best_norm_ED),
+                    'total_training_time': float(time.time() - start_time),
+                    'avg_train_loss': float(np.mean(training_losses)) if training_losses else 0.0,
+                    'final_train_loss': float(training_losses[-1]) if training_losses else 0.0,
+                    'final_val_loss': float(validation_losses[-1]) if validation_losses else 0.0,
+                    'final_val_accuracy': float(validation_accuracies[-1]) if validation_accuracies else 0.0,
+                    'experiment_name': str(opt.experiment_name),
+                    'model_parameters': int(sum(params_num)),
+                    'total_training_samples': int(len(training_losses))
+                }                
+                
                 save_metrics_summary(opt.experiment_name, final_summary)
                 
                 print(f"Training completed! Metrics saved in: ./saved_models/{opt.experiment_name}/metrics/")
