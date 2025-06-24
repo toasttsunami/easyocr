@@ -313,7 +313,7 @@ def train(opt, show_number = 2, amp=False):
             pbar.set_description(f"Training Progress (loss: {cost.item():.4f}, lr: {current_lr:.6f})")
             
             # validation part
-            if (i % opt.valInterval == 0) and (i!=0):
+            if (i % opt.valInterval == 0):# and (i!=0):
                 print('training time: ', time.time()-t1)
                 t1=time.time()
                 elapsed_time = time.time() - start_time
